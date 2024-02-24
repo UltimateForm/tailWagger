@@ -8,6 +8,7 @@ name = "pypi"
 watchdog = "*"
 asyncio = "*"
 requests = "*"
+gunicorn = "*"
 
 [dev-packages]
 

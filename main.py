@@ -31,7 +31,7 @@ class Wagger(discord.Client):
         await self._channel.send(content)
 
     async def send_to_punishments(self, embed:Embed, message:str):
-        user_agent = "Sulla@GladiatorDuels"
+        user_agent = environ["USER_AGENT"]
         (type, playfabId, reason) = parse_utilities.get_punishment(message)
         info_api = environ["INFO_API"]
         url = f"{info_api}/{playfabId}"
