@@ -49,7 +49,7 @@ class Wagger(discord.Client):
     async def on_message(self, message: discord.message.Message):
         if message.content == "ping":
             await self.send("Pong")
-        elif len(message.embeds) > 0 and  message.channel.id != 1210988905734611064:
+        elif len(message.embeds) > 0 and  message.channel.id != self._pun_channel_id:
             print(f"received message {message}")
             embed = message.embeds[0]
             source_dict = embed.to_dict()
