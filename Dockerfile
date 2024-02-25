@@ -14,4 +14,4 @@ COPY ./main.py ./
 
 COPY ./parse_utilities.py .
 
-CMD ["pipenv", "run", "python", "main.py"]deploy
+CMD ["pipenv", "run", "python", "main.py"]
