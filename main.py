@@ -11,26 +11,30 @@ PUNISHMENTS = [".warn", ".ban"]
 
 class Wagger(discord.Client):
     _channel_id: int = None
-    _pun_channel_id: int = None
+    _warn_channel_id: int = None
+    _ban_channel_id: int = None
     _channel: discord.TextChannel = None
+    _warn_channel: discord.TextChannel = None
     _ban_channel: discord.TextChannel = None
     ready: bool = False
 
-    def __init__(self, channel_id, pun_channel_id, intents: Intents, **options: Any) -> None:
+    def __init__(self, channel_id, warn_channel_id, ban_channel_id, intents: Intents, **options: Any) -> None:
         self._channel_id = channel_id
-        self._pun_channel_id = pun_channel_id
+        self._warn_channel_id = warn_channel_id
+        self._ban_channel_id = ban_channel_id
         super().__init__(intents=intents, **options)
 
     async def on_ready(self):
         self._channel = await self.fetch_channel(self._channel_id)
-        self._ban_channel = await self.fetch_channel(self._pun_channel_id)
-        print(f"Logged on as {self.user}, chatting in {self._channel.name} and {self._ban_channel.name}")
+        self._warn_channel = await self.fetch_channel(self._warn_channel_id)
+        self._ban_channel = await self.fetch_channel(self._ban_channel_id)
+        print(f"Logged on as {self.user}, chatting in {self._channel.name}, {self._warn_channel.name}, {self._ban_channel.name}")
         self.ready = True
 
     async def send(self, content: str):
         await self._channel.send(content)
 
-    async def send_to_punishments(self, embed:Embed, message:str):
+    async def send_punishment(self, embed:Embed, message:str):
         user_agent = environ["USER_AGENT"]
         (type, playfabId, reason) = parse_utilities.get_punishment(message)
         info_api = environ["INFO_API"]
@@ -43,13 +47,16 @@ class Wagger(discord.Client):
         embed.add_field(name="Culprit Name", value=json_response["name"])
         embed.add_field(name="Culprit Platform", value=json_response["platform"])
         embed.add_field(name="Reason", value=reason)
-        await self._ban_channel.send("Punishment", embed=embed)
+        if type == ".ban":
+            await self._ban_channel.send(embed=embed)
+        else:
+            await self._warn_channel.send(embed=embed)
         return embed
 
     async def on_message(self, message: discord.message.Message):
         if message.content == "ping":
             await self.send("Pong")
-        elif len(message.embeds) > 0 and str(message.channel.id) != self._pun_channel_id:
+        elif len(message.embeds) > 0 and str(message.channel.id) == self._channel_id:
             print(f"received message {message}")
             embed = message.embeds[0]
             source_dict = embed.to_dict()
@@ -61,7 +68,7 @@ class Wagger(discord.Client):
             true_message = messageValue.replace("Message:** ", "")
             if any(true_message.startswith(pun) for pun in PUNISHMENTS):
                 try:
-                    await self.send_to_punishments(new_embed, true_message)
+                    await self.send_punishment(new_embed, true_message)
                 except Exception as e:
                     print(f"Failed to send punishment log. {e}")
 
@@ -70,9 +77,9 @@ class Wagger(discord.Client):
 intents = discord.Intents.default()
 intents.message_content = True
 target_channel_id = environ["D_CHANNEL_ID"]
-pun_channel_id = environ["D_PUN_CHANNEL_ID"]
-
-client = Wagger(target_channel_id, pun_channel_id, intents=intents)
+warn_channel_id = environ["D_PUN_CHANNEL_ID"]
+ban_channel_id = environ["D_BAN_CHANNEL_ID"]
+client = Wagger(target_channel_id, warn_channel_id, ban_channel_id, intents=intents)
 
 loop = asyncio.get_event_loop()
 loop.run_until_complete(client.start(environ["D_TOKEN"]))
