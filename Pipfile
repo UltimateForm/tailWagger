@@ -9,6 +9,7 @@ watchdog = "*"
 asyncio = "*"
 requests = "*"
 gunicorn = "*"
+pysrcds = "*"
 
 [dev-packages]
 
