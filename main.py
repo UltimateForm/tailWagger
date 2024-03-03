@@ -15,6 +15,7 @@ from typing import List
 
 # note: revisit parse_utilities if punishments changed
 PUNISHMENTS = [".warn", ".ban"]
+PUNISHMENT_REMOVALS = [".warnremove"]
 CMD_EXECUTOR = ".run "
 
 
@@ -25,11 +26,13 @@ class Wagger(discord.Client):
     _ban_channel_id: int = None
     _console_channel_id: int = None
     _server_status_channel_id: int = None
+    _unpunish_channel_id: int = None
     _channel: discord.TextChannel = None
     _warn_channel: discord.TextChannel = None
     _ban_channel: discord.TextChannel = None
     _console_channel: discord.TextChannel = None
     _server_status_channel: discord.TextChannel = None
+    _unpunish_channel: discord.TextChannel = None
     _rcon_connection: RconConnection = None
     _rcon_ready: bool = False
     _rcon_cmd_blacklist: List[str] = []
@@ -43,6 +46,7 @@ class Wagger(discord.Client):
         ban_channel_id,
         console_channel_id,
         server_status_channel_id,
+        unpunish_channel_id,
         intents: Intents,
         rcon_pass: str | None = None,
         rcon_addr: str | None = None,
@@ -55,6 +59,7 @@ class Wagger(discord.Client):
         self._ban_channel_id = ban_channel_id
         self._console_channel_id = console_channel_id
         self._server_status_channel_id = server_status_channel_id
+        self._unpunish_channel_id = unpunish_channel_id
         if rcon_pass and rcon_addr and rcon_port:
             self._rcon_cmd_blacklist = rcon_cmd_blacklist
             self._rcon_connection = RconConnection(
@@ -73,19 +78,18 @@ class Wagger(discord.Client):
         self._server_status_channel = await self.fetch_channel(
             self._server_status_channel_id
         )
-        print(
-            f"Logged on as {self.user}"
-        )
+        self._unpunish_channel = await self.fetch_channel(self._unpunish_channel_id)
+        print(f"Logged on as {self.user}")
         self.ready = True
 
     async def send(self, content: str):
         await self._channel.send()
         await self._channel.send(content)
 
-    def exec_command(self, cmd: str) -> str:
+    async def exec_command(self, cmd: str) -> str:
         if any([cmd.startswith(black) for black in self._rcon_cmd_blacklist]):
             return "Forbidden"
-        response: bytes = self._rcon_connection.exec_command(cmd)
+        response: bytes = await asyncio.to_thread(self._rcon_connection.exec_command, cmd)
         # response_parsed = response.replace("b'", "").replace("\n\x00\x00", "")
         response_parsed = response.decode("utf-8").replace("\x00\x00", "")
         return response_parsed
@@ -96,7 +100,7 @@ class Wagger(discord.Client):
                 await asyncio.sleep(interval_secs)
             try:
                 embed = Embed(description="Server Status")
-                server_status = self.exec_command("info")
+                server_status = await self.exec_command("info")
                 server_status_per_line = [
                     line for line in server_status.split("\n") if line
                 ]
@@ -107,13 +111,21 @@ class Wagger(discord.Client):
                     if not kv or not kv.startswith("Version")
                 ]
                 server_status_dict = dict(server_status_kv)
-                embed.title = server_status_dict["ServerName"]
+                server_name = server_status_dict["ServerName"]
+                embed.description = f"```{server_name}```"
                 embed.add_field(name="Status", value=":green_circle:")
                 embed.add_field(name="Gamemode", value=server_status_dict["GameMode"])
                 embed.add_field(name="Current Map", value=server_status_dict["Map"])
-                playerlist = self.exec_command("playerlist")
-                code_block_playerlist = f"```{playerlist}```"
-                playercount = playerlist.count("\n")
+                playerlist = await self.exec_command("playerlist")
+                playerlist_rows = playerlist.split("\n")
+                playerlist_sanitized = [
+                    parse_utilities.get_sanitized_playerrow(row)
+                    for row in playerlist_rows
+                    if row
+                ]
+                playerlist_sanitized_joined = "\n".join(playerlist_sanitized)
+                code_block_playerlist = f"```{playerlist_sanitized_joined}```"
+                playercount = len(playerlist_sanitized)
                 embed.add_field(
                     name=f"Player list ({playercount})",
                     value=code_block_playerlist,
@@ -133,7 +145,7 @@ class Wagger(discord.Client):
     async def exec_discord_command(self, message: discord.message.Message):
         message_raw = message.content
         message_cmd = message_raw.replace(CMD_EXECUTOR, "")
-        response = self.exec_command(message_cmd)
+        response = await self.exec_command(message_cmd)
         code_block_response = f"```{response}```"
         if len(response) > 1000:
             await message.reply(code_block_response)
@@ -143,14 +155,18 @@ class Wagger(discord.Client):
         embed.add_field(name="Output", value=code_block_response, inline=False)
         await message.reply(embed=embed)
 
-    async def send_punishment(self, embed: Embed, message: str):
+    async def get_player_info(self, playfab_id: str) -> dict:
         user_agent = environ["USER_AGENT"]
-        punishment: parse_utilities.Punishment = parse_utilities.get_punishment(message)
         info_api = environ["INFO_API"]
-        url = f"{info_api}/{punishment.playfab_id}"
+        url = f"{info_api}/{playfab_id}"
         headers = {"User-Agent": user_agent}
-        response = requests.get(url, headers=headers)
+        response = await asyncio.to_thread(requests.get, url, headers=headers)
         json_response = response.json()
+        return json_response
+
+    async def send_punishment(self, embed: Embed, message: str):
+        punishment: parse_utilities.Punishment = parse_utilities.get_punishment(message)
+        json_response = await self.get_player_info(punishment.playfab_id)
         embed.title = "Punishment"
         embed.color = discord.colour.Colour.from_str("#8b0000")
         embed.add_field(name="Culprit Name", value=json_response["name"])
@@ -163,6 +179,23 @@ class Wagger(discord.Client):
         else:
             await self._warn_channel.send(embed=embed)
         return embed
+
+    async def send_unpunishment(self, embed: Embed, message: str):
+        new_embed = Embed()
+        new_embed.title = "Warn-Remove Log"
+        descrip = embed.description
+        split = descrip.split("\n**")
+        # todo: fix this.... embed.fields needs to work
+        author_key = [element for element in split if element.startswith("Sender")]
+        author_value = author_key[0]
+        true_author = author_value.replace("Sender:** ", "")
+        new_embed.add_field(name="Author", value=true_author, inline=False)
+        culprit_playfab_id = message.split(" ")[1]
+        culprit_info = await self.get_player_info(culprit_playfab_id)
+        culprit_name = culprit_info["name"]
+        new_embed.add_field(name="Culprit", value=f"{culprit_name} ({culprit_playfab_id})")
+        new_embed.set_image(url=culprit_info["avatarUrl"])
+        await self._unpunish_channel.send(embed=new_embed)
 
     async def on_message(self, message: discord.message.Message):
         if message.content == "ping":
@@ -178,14 +211,20 @@ class Wagger(discord.Client):
             new_embed = Embed.from_dict(source_dict)
             descrip = new_embed.description
             split = descrip.split("\n**")
+            # todo: use embed.fields to get fields instead of string processing
             messageKey = [element for element in split if element.startswith("Message")]
             messageValue = messageKey[0]
             true_message = messageValue.replace("Message:** ", "")
-            if any(true_message.startswith(pun) for pun in PUNISHMENTS):
+            if any(true_message.startswith(unpun) for unpun in PUNISHMENT_REMOVALS):
+                try:
+                    await self.send_unpunishment(new_embed, true_message)
+                except Exception as e:
+                    print(f"Failed to send unpunishment log. {str(e)}")
+            elif any(true_message.startswith(pun) for pun in PUNISHMENTS):
                 try:
                     await self.send_punishment(new_embed, true_message)
                 except Exception as e:
-                    print(f"Failed to send punishment log. {e}")
+                    print(f"Failed to send punishment log. {str(e)}")
 
 
 # this is untenable, create some sort of configuration collector
@@ -196,6 +235,7 @@ warn_channel_id = environ["D_PUN_CHANNEL_ID"]
 ban_channel_id = environ["D_BAN_CHANNEL_ID"]
 console_channel_id = environ["D_CONSOLE_CHANNEL_ID"]
 server_status_channel_id = environ["D_SERVER_STATUS_ID"]
+unpunish_channel_id = environ["D_UNPUNISH_CHANNEL_ID"]
 rcon_addr = environ["RCON_ADDRESS"]
 rcon_pass = environ["RCON_PASSWORD"]
 rcon_port_unparsed = environ["RCON_PORT"]
@@ -208,6 +248,7 @@ client = Wagger(
     ban_channel_id,
     console_channel_id,
     server_status_channel_id,
+    unpunish_channel_id,
     intents=intents,
     rcon_addr=rcon_addr,
     rcon_port=rcon_port,
