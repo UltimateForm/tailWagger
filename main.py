@@ -37,6 +37,10 @@ class Wagger(discord.Client):
     _rcon_ready: bool = False
     _rcon_cmd_blacklist: List[str] = []
     _server_status_job = None
+    # potential security risk
+    _rcon_password: str
+    _rcon_port: int
+    _rcon_addr: str
     ready: bool = False
 
     def __init__(
@@ -61,14 +65,23 @@ class Wagger(discord.Client):
         self._server_status_channel_id = server_status_channel_id
         self._unpunish_channel_id = unpunish_channel_id
         if rcon_pass and rcon_addr and rcon_port:
+            self._rcon_addr = rcon_addr
+            self._rcon_password = rcon_pass
+            self._rcon_port = rcon_port
             self._rcon_cmd_blacklist = rcon_cmd_blacklist
-            self._rcon_connection = RconConnection(
-                rcon_addr, rcon_port, rcon_pass, single_packet_mode=True
-            )
+            self._connect_rcon()
             self._server_status_job = asyncio.get_event_loop().create_task(
                 self.server_status_watch()
             )
         super().__init__(intents=intents, **options)
+
+    def _connect_rcon(self):
+        self._rcon_connection = RconConnection(
+            self._rcon_addr,
+            self._rcon_port,
+            self._rcon_password,
+            single_packet_mode=True,
+        )
 
     async def on_ready(self):
         self._channel = await self.fetch_channel(self._channel_id)
@@ -87,14 +100,20 @@ class Wagger(discord.Client):
         await self._channel.send(content)
 
     async def exec_command(self, cmd: str) -> str:
-        if any([cmd.startswith(black) for black in self._rcon_cmd_blacklist]):
-            return "Forbidden"
-        response: bytes = await asyncio.to_thread(
-            self._rcon_connection.exec_command, cmd
-        )
-        # response_parsed = response.replace("b'", "").replace("\n\x00\x00", "")
-        response_parsed = response.decode("US-ASCII").replace("\x00\x00", "")
-        return response_parsed
+        try:
+            if cmd == "reconnect":
+                self._connect_rcon()
+                return "Reconnected"
+            if any([cmd.startswith(black) for black in self._rcon_cmd_blacklist]):
+                return "Forbidden"
+            response: bytes = await asyncio.to_thread(
+                self._rcon_connection.exec_command, cmd
+            )
+            # response_parsed = response.replace("b'", "").replace("\n\x00\x00", "")
+            response_parsed = response.decode("US-ASCII").replace("\x00\x00", "")
+            return response_parsed
+        except ConnectionError:
+            return "RCON Connection Error"
 
     async def server_status_watch(self, interval_secs: int = 30):
         while True:
