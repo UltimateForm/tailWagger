@@ -89,9 +89,11 @@ class Wagger(discord.Client):
     async def exec_command(self, cmd: str) -> str:
         if any([cmd.startswith(black) for black in self._rcon_cmd_blacklist]):
             return "Forbidden"
-        response: bytes = await asyncio.to_thread(self._rcon_connection.exec_command, cmd)
+        response: bytes = await asyncio.to_thread(
+            self._rcon_connection.exec_command, cmd
+        )
         # response_parsed = response.replace("b'", "").replace("\n\x00\x00", "")
-        response_parsed = response.decode("utf-8").replace("\x00\x00", "")
+        response_parsed = response.decode("US-ASCII").replace("\x00\x00", "")
         return response_parsed
 
     async def server_status_watch(self, interval_secs: int = 30):
@@ -117,17 +119,33 @@ class Wagger(discord.Client):
                 embed.add_field(name="Gamemode", value=server_status_dict["GameMode"])
                 embed.add_field(name="Current Map", value=server_status_dict["Map"])
                 playerlist = await self.exec_command("playerlist")
-                playerlist_rows = playerlist.split("\n")
-                playerlist_sanitized = [
-                    parse_utilities.get_sanitized_playerrow(row)
-                    for row in playerlist_rows
-                    if row
-                ]
-                playerlist_sanitized_joined = "\n".join(playerlist_sanitized)
-                code_block_playerlist = f"```{playerlist_sanitized_joined}```"
-                playercount = len(playerlist_sanitized)
+                code_block_playerlist = f"```{playerlist}```"
+                playerlist_sanitized: List[str] = []
+                player_count = 0
+                no_players_online = (
+                    playerlist == "There are currently no players present"
+                )
+
+                if not no_players_online:
+                    playerlist_rows = [row for row in playerlist.split("\n") if row]
+                    current_list_size = 0
+                    player_count = len(playerlist_rows)
+                    for row_index, row in enumerate(playerlist_rows):
+                        sanitized_row = parse_utilities.get_sanitized_playerrow(row)
+                        expected_new_lines = row_index + 1
+                        expected_new_list_size = current_list_size + len(sanitized_row)
+                        if expected_new_lines + expected_new_list_size > 990:
+                            playerlist_sanitized.append(
+                                "-- LIST CUT OFF FOR DISPLAY --"
+                            )
+                            break
+                        playerlist_sanitized.append(sanitized_row)
+                        current_list_size += len(sanitized_row)
+                    playerlist_sanitized_joined = "\n".join(playerlist_sanitized)
+                    code_block_playerlist = f"```{playerlist_sanitized_joined}```"
+
                 embed.add_field(
-                    name=f"Player list ({playercount})",
+                    name=f"Player list ({player_count})",
                     value=code_block_playerlist,
                     inline=False,
                 )
@@ -193,7 +211,9 @@ class Wagger(discord.Client):
         culprit_playfab_id = message.split(" ")[1]
         culprit_info = await self.get_player_info(culprit_playfab_id)
         culprit_name = culprit_info["name"]
-        new_embed.add_field(name="Culprit", value=f"{culprit_name} ({culprit_playfab_id})")
+        new_embed.add_field(
+            name="Culprit", value=f"{culprit_name} ({culprit_playfab_id})"
+        )
         new_embed.set_image(url=culprit_info["avatarUrl"])
         await self._unpunish_channel.send(embed=new_embed)
 
