@@ -4,6 +4,7 @@ from os import environ, path
 import asyncio
 from discord.flags import Intents
 from discord import Embed
+from logs_watch import LogsWatch
 import parse_utilities
 import requests
 from srcds.rcon import RconConnection
@@ -12,7 +13,7 @@ import numpy as np
 import json
 from collections import ChainMap
 from rcon_listener import RconListener
-from reactivex import operators
+from reactivex import operators, from_
 from kill_watch import KillWatch
 
 # todo: split this into files
@@ -391,6 +392,9 @@ class Wagger(discord.Client):
         new_embed.set_image(url=culprit_info["avatarUrl"])
         await self._unpunish_channel.send(embed=new_embed)
 
+    async def send_logout(self, embed: Embed):
+        await self._channel.send(embed=embed)
+
     async def on_message(self, message: discord.message.Message):
         if message.content == "ping":
             await message.channel.send("pong")
@@ -404,7 +408,7 @@ class Wagger(discord.Client):
             new_embed = Embed.from_dict(source_dict)
 
             embed_dict = parse_utilities.embed_to_dict(new_embed)
-            true_message = embed_dict["Message"]
+            true_message = embed_dict.get("Message", "")
             if embed_dict["Type"] == "AdminPrivateAnnounce":
                 print("Deleting ")
                 try:
@@ -461,6 +465,9 @@ loop = asyncio.get_event_loop()
 login_listener = RconListener(event="login", listening=False)
 killfeed_listener = RconListener(event="killfeed", listening=False)
 kill_watcher = KillWatch()
+logs_watch = LogsWatch(environ["LOGS_PATH"])
+
+PLAYER_MAP: dict[str, str] = {}
 
 
 def login_process(event: str):
@@ -479,6 +486,7 @@ def login_process(event: str):
     try:
         playfab_id = event_data["playfabId"]
         userName = event_data["userName"]
+        PLAYER_MAP[playfab_id] = userName
         asyncio.create_task(client.process_joiners({playfab_id: userName}))
     except Exception as e:
         print(f"Failed to process login event {str(e)}")
@@ -499,7 +507,9 @@ def rex_process(event_data: dict[str, str]):
                 )
             )
             asyncio.create_task(
-                client.exec_command(f"renameplayer {killerPlayfabId} [REX] {killer.replace('[REX]', '').lstrip()}")
+                client.exec_command(
+                    f"renameplayer {killerPlayfabId} [REX] {killer.replace('[REX]', '').lstrip()}"
+                )
             )
             client.current_rex = killerPlayfabId
         elif client.current_rex == killedPlayfabId:
@@ -546,8 +556,29 @@ kill_watcher.subscribe(
 )
 
 
+def logout_log_process(log: str):
+    (success, parsed) = parse_utilities.parse_event(
+        log, parse_utilities.GROK_LOGOUT_LOG
+    )
+    if not success:
+        return
+    embed = Embed(title="Logout Event")
+    playfabId = parsed.get("playfabId", None)
+    userName = PLAYER_MAP.get(playfabId, "")
+    embed.add_field(name="PlayfabId", value=parsed.get("playfabId", None), inline=False)
+    embed.add_field(name="Username", value=userName, inline=False)
+    embed.add_field(name="IP", value=parsed.get("ipAddress"), inline=False)
+    asyncio.create_task(client.send_logout(embed))
+
+
+logs_watch.pipe(operators.filter(lambda x: "UNetConnection::Close" in x)).subscribe(
+    logout_log_process
+)
+
+
 async def main():
     await asyncio.gather(
+        logs_watch.run(),
         killfeed_listener.run(),
         login_listener.run(),
         client.start(environ["D_TOKEN"]),

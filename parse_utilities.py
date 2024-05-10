@@ -7,6 +7,7 @@ Punishment = namedtuple("Punishment", ["type", "playfab_id", "reason", "duration
 GROK_LOGIN_EVENT = "%{WORD:eventType}: %{NOTSPACE:date} %{GREEDYDATA:userName} \(%{WORD:playfabId}\) %{GREEDYDATA:eventText}"
 GROK_KILLFEED_EVENT = "%{WORD:eventType}: %{NOTSPACE:date}: %{NOTSPACE:killerPlayfabId} \(%{GREEDYDATA:userName}\) killed %{NOTSPACE:killedPlayfabId} \(%{GREEDYDATA:killedUserName}\)"
 GROK_KILLFEED_BOT_EVENT = "%{WORD:eventType}: %{NOTSPACE:date}: %{NOTSPACE:killerPlayfabId} \(%{GREEDYDATA:userName}\) killed  \(%{GREEDYDATA:killedUserName}\)"
+GROK_LOGOUT_LOG = "\[%{NOTSPACE:datestamp}\]\[%{NUMBER:logId}\]LogNet: UNetConnection::Close: \[UNetConnection\] RemoteAddr: %{IPV4:ipAddress}(?:\:%{NUMBER:port})?, %{GREEDYDATA} MordhauOnlineSubsystem\:%{NOTSPACE:playfabId}, %{GREEDYDATA}"
 
 
 def parse_event(event: str, grok_pattern: str) -> tuple[bool, dict[str, str]]:
