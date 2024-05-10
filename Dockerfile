@@ -14,4 +14,8 @@ COPY ./main.py ./
 
 COPY ./parse_utilities.py .
 
+COPY ./rcon_listener.py .
+
+COPY ./kill_watch.py .
+
 CMD ["pipenv", "run", "python", "main.py"]

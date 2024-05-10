@@ -10,6 +10,9 @@ asyncio = "*"
 requests = "*"
 gunicorn = "*"
 pysrcds = "*"
+numpy = "*"
+pygrok = "*"
+reactivex = "*"
 
 [dev-packages]
 

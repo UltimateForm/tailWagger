@@ -1,6 +1,6 @@
 from typing import Any
 import discord
-from os import environ
+from os import environ, path
 import asyncio
 from discord.flags import Intents
 from discord import Embed
@@ -8,6 +8,12 @@ import parse_utilities
 import requests
 from srcds.rcon import RconConnection
 from typing import List
+import numpy as np
+import json
+from collections import ChainMap
+from rcon_listener import RconListener
+from reactivex import operators
+from kill_watch import KillWatch
 
 # todo: split this into files
 # todo: use dataclasses for config
@@ -17,6 +23,7 @@ from typing import List
 PUNISHMENTS = [".warn", ".ban"]
 PUNISHMENT_REMOVALS = [".warnremove"]
 CMD_EXECUTOR = ".run "
+PLAYER_CONFIG_PATH = "./persist/player_config.npy"
 
 
 class Wagger(discord.Client):
@@ -27,13 +34,15 @@ class Wagger(discord.Client):
     _console_channel_id: int = None
     _server_status_channel_id: int = None
     _unpunish_channel_id: int = None
+    _server_noti_channel_id: int = None
     _channel: discord.TextChannel = None
     _warn_channel: discord.TextChannel = None
     _ban_channel: discord.TextChannel = None
     _console_channel: discord.TextChannel = None
     _server_status_channel: discord.TextChannel = None
     _unpunish_channel: discord.TextChannel = None
-    _rcon_connection: RconConnection = None
+    _unpunish_channel: discord.TextChannel = None
+    _server_noti_channel: discord.TextChannel = None
     _rcon_ready: bool = False
     _rcon_cmd_blacklist: List[str] = []
     _server_status_job = None
@@ -41,7 +50,9 @@ class Wagger(discord.Client):
     _rcon_password: str
     _rcon_port: int
     _rcon_addr: str
+    player_config: dict = {"tags": {}, "salutes": {}, "watch": {}}
     ready: bool = False
+    current_rex = ""
 
     def __init__(
         self,
@@ -51,6 +62,7 @@ class Wagger(discord.Client):
         console_channel_id,
         server_status_channel_id,
         unpunish_channel_id,
+        server_noti_channel_id,
         intents: Intents,
         rcon_pass: str | None = None,
         rcon_addr: str | None = None,
@@ -64,24 +76,25 @@ class Wagger(discord.Client):
         self._console_channel_id = console_channel_id
         self._server_status_channel_id = server_status_channel_id
         self._unpunish_channel_id = unpunish_channel_id
+        self._server_noti_channel_id = server_noti_channel_id
         if rcon_pass and rcon_addr and rcon_port:
             self._rcon_addr = rcon_addr
             self._rcon_password = rcon_pass
             self._rcon_port = rcon_port
             self._rcon_cmd_blacklist = rcon_cmd_blacklist
-            self._connect_rcon()
             self._server_status_job = asyncio.get_event_loop().create_task(
                 self.server_status_watch()
             )
+        self.load_config()
         super().__init__(intents=intents, **options)
 
-    def _connect_rcon(self):
-        self._rcon_connection = RconConnection(
-            self._rcon_addr,
-            self._rcon_port,
-            self._rcon_password,
-            single_packet_mode=True,
-        )
+    # def _connect_rcon(self):
+    #     self._rcon_connection = RconConnection(
+    #         self._rcon_addr,
+    #         self._rcon_port,
+    #         self._rcon_password,
+    #         single_packet_mode=True,
+    #     )
 
     async def on_ready(self):
         self._channel = await self.fetch_channel(self._channel_id)
@@ -92,6 +105,9 @@ class Wagger(discord.Client):
             self._server_status_channel_id
         )
         self._unpunish_channel = await self.fetch_channel(self._unpunish_channel_id)
+        self._server_noti_channel = await self.fetch_channel(
+            self._server_noti_channel_id
+        )
         print(f"Logged on as {self.user}")
         self.ready = True
 
@@ -99,21 +115,160 @@ class Wagger(discord.Client):
         await self._channel.send()
         await self._channel.send(content)
 
+    def save_config(self):
+        print(f"Saving file to ${PLAYER_CONFIG_PATH}")
+        np.save(PLAYER_CONFIG_PATH, self.player_config)
+
+    def load_config(self):
+        print(f"Loading file from ${PLAYER_CONFIG_PATH}")
+        file_exists = path.exists(PLAYER_CONFIG_PATH)
+        print(f"File ${PLAYER_CONFIG_PATH} exists? {file_exists}")
+        if not file_exists:
+            print(">Could not load player config file as it does not exit")
+            return
+        self.player_config = np.load(PLAYER_CONFIG_PATH, allow_pickle=True).item()
+
+    def tag_player(self, cmd: str):
+        args = cmd.split(" ")
+        if len(args) != 3:
+            return "Invalid arguments"
+        id = args[1]
+        tag = args[2]
+        self.player_config["tags"][id] = tag
+        self.save_config()
+        return json.dumps(self.player_config, indent=2)
+
+    def untag_player(self, cmd: str):
+        args = cmd.split(" ")
+        if len(args) != 2:
+            return "Invalid arguments"
+        id = args[1]
+        self.player_config["tags"].pop(id, None)
+        self.save_config()
+        return json.dumps(self.player_config, indent=2)
+
+    def add_salute(self, cmd: str):
+        args = cmd.split(" ", 2)
+        if len(args) < 3:
+            return "Invalid arguments"
+        id = args[1]
+        salute = args[2]
+        self.player_config["salutes"][id] = salute
+        self.save_config()
+        return json.dumps(self.player_config, indent=2)
+
+    def remove_salute(self, cmd: str):
+        args = cmd.split(" ")
+        if len(args) != 2:
+            return "Invalid arguments"
+        id = args[1]
+        self.player_config["salutes"].pop(id, None)
+        self.save_config()
+        return json.dumps(self.player_config, indent=2)
+
+    def add_watch(self, cmd: str):
+        args = cmd.split(" ", 2)
+        if len(args) < 3:
+            return "Invalid arguments"
+        id = args[1]
+        reason = args[2]
+        if "watch" not in self.player_config:
+            self.player_config["watch"] = {}
+        self.player_config["watch"][id] = reason
+        self.save_config()
+        return json.dumps(self.player_config, indent=2)
+
+    def unwatch(self, cmd: str):
+        args = cmd.split(" ")
+        if len(args) != 2:
+            return "Invalid arguments"
+        id = args[1]
+        self.player_config["watch"].pop(id, None)
+        self.save_config()
+        return json.dumps(self.player_config, indent=2)
+
     async def exec_command(self, cmd: str) -> str:
         try:
-            if cmd == "reconnect":
-                self._connect_rcon()
-                return "Reconnected"
+            if cmd.startswith("tag "):
+                return self.tag_player(cmd)
+            if cmd.startswith("untag "):
+                return self.untag_player(cmd)
+            if cmd.startswith("addSalute "):
+                return self.add_salute(cmd)
+            if cmd.startswith("removeSalute "):
+                return self.remove_salute(cmd)
+            if cmd.startswith("watch "):
+                return self.add_watch(cmd)
+            if cmd.startswith("unwatch "):
+                return self.unwatch(cmd)
             if any([cmd.startswith(black) for black in self._rcon_cmd_blacklist]):
                 return "Forbidden"
-            response: bytes = await asyncio.to_thread(
-                self._rcon_connection.exec_command, cmd
+            target_con = RconConnection(
+                self._rcon_addr,
+                self._rcon_port,
+                self._rcon_password,
+                single_packet_mode=True,
             )
+            print(f"Executing {cmd}")
+            response: bytes = await asyncio.to_thread(target_con.exec_command, cmd)
+            print(f"Excuted {cmd}")
+
             # response_parsed = response.replace("b'", "").replace("\n\x00\x00", "")
             response_parsed = response.decode("US-ASCII").replace("\x00\x00", "")
+            target_con._sock.close()
             return response_parsed
         except ConnectionError:
             return "RCON Connection Error"
+        except Exception as e:
+            print(f"Unknown error occured {str(e)}")
+            return "Uknown error"
+
+    async def send_salutes(self, ids: set[str]):
+        config = self.player_config["salutes"]
+        target_ids = set(id for id in ids if id in config.keys())
+        if len(target_ids) == 0:
+            return
+        await asyncio.sleep(3)
+        [
+            asyncio.create_task(self.exec_command(f"say {config[id]}"))
+            for id in target_ids
+        ]
+
+    async def process_tags(self, targets: dict[str, str]):
+        ids = targets.keys()
+        config = self.player_config["tags"]
+        target_ids = set(id for id in ids if id in config.keys())
+        if len(target_ids) == 0:
+            return
+        [
+            asyncio.create_task(
+                self.exec_command(f"renameplayer {id} [{config[id]}] {targets[id]}")
+            )
+            for id in target_ids
+        ]
+
+    async def notify_watch(self, targets: dict[str, str]):
+        ids = targets.keys()
+        config = self.player_config["watch"]
+        target_ids = set(id for id in ids if id in config.keys())
+        if len(target_ids) == 0:
+            return
+        [
+            asyncio.create_task(
+                self._server_noti_channel.send(
+                    f"@here Player `{targets[id]} ({id})` has joined server. WatchReason: **{config[id]}**"
+                )
+            )
+            for id in target_ids
+        ]
+
+    async def process_joiners(self, joiners: dict[str, str]):
+        ids = joiners.keys()
+        if len(ids) == 0:
+            return
+        await self.send_salutes(ids)
+        await self.process_tags(joiners)
+        await self.notify_watch(joiners)
 
     async def server_status_watch(self, interval_secs: int = 30):
         while True:
@@ -244,16 +399,20 @@ class Wagger(discord.Client):
         ) == self._console_channel_id and message.content.startswith(CMD_EXECUTOR):
             await self.exec_discord_command(message)
         elif len(message.embeds) > 0 and str(message.channel.id) == self._channel_id:
-            print(f"received message {message}")
             embed = message.embeds[0]
             source_dict = embed.to_dict()
             new_embed = Embed.from_dict(source_dict)
-            descrip = new_embed.description
-            split = descrip.split("\n**")
-            # todo: use embed.fields to get fields instead of string processing
-            messageKey = [element for element in split if element.startswith("Message")]
-            messageValue = messageKey[0]
-            true_message = messageValue.replace("Message:** ", "")
+
+            embed_dict = parse_utilities.embed_to_dict(new_embed)
+            true_message = embed_dict["Message"]
+            if embed_dict["Type"] == "AdminPrivateAnnounce":
+                print("Deleting ")
+                try:
+                    self._channel.delete_messages()
+                    await message.delete()
+                except e:
+                    print(f"Failed to delete message. {str(e)}")
+                return
             if any(true_message.startswith(unpun) for unpun in PUNISHMENT_REMOVALS):
                 try:
                     await self.send_unpunishment(new_embed, true_message)
@@ -269,12 +428,14 @@ class Wagger(discord.Client):
 # this is untenable, create some sort of configuration collector
 intents = discord.Intents.default()
 intents.message_content = True
+intents
 target_channel_id = environ["D_CHANNEL_ID"]
 warn_channel_id = environ["D_PUN_CHANNEL_ID"]
 ban_channel_id = environ["D_BAN_CHANNEL_ID"]
 console_channel_id = environ["D_CONSOLE_CHANNEL_ID"]
 server_status_channel_id = environ["D_SERVER_STATUS_ID"]
 unpunish_channel_id = environ["D_UNPUNISH_CHANNEL_ID"]
+server_noti_id = environ["D_SERVER_NOTI_ID"]
 rcon_addr = environ["RCON_ADDRESS"]
 rcon_pass = environ["RCON_PASSWORD"]
 rcon_port_unparsed = environ["RCON_PORT"]
@@ -288,6 +449,7 @@ client = Wagger(
     console_channel_id,
     server_status_channel_id,
     unpunish_channel_id,
+    server_noti_id,
     intents=intents,
     rcon_addr=rcon_addr,
     rcon_port=rcon_port,
@@ -295,4 +457,101 @@ client = Wagger(
     rcon_cmd_blacklist=cmd_blacklist,
 )
 loop = asyncio.get_event_loop()
-loop.run_until_complete(client.start(environ["D_TOKEN"]))
+
+login_listener = RconListener(event="login", listening=False)
+killfeed_listener = RconListener(event="killfeed", listening=False)
+kill_watcher = KillWatch()
+
+
+def login_process(event: str):
+    (success, event_data) = parse_utilities.parse_event(
+        event, parse_utilities.GROK_LOGIN_EVENT
+    )
+    if not success:
+        return
+    event_text = event_data.get("eventText", "").lower()
+    if event_text.lower().startswith(
+        "logged out"
+    ) and client.current_rex == event_data.get("playfabId", None):
+        client.current_rex = ""
+    if not event_text.lower().startswith("logged in"):
+        return
+    try:
+        playfab_id = event_data["playfabId"]
+        userName = event_data["userName"]
+        asyncio.create_task(client.process_joiners({playfab_id: userName}))
+    except Exception as e:
+        print(f"Failed to process login event {str(e)}")
+
+
+def rex_process(event_data: dict[str, str]):
+    try:
+        killer = event_data.get("userName", "")
+        killed = event_data.get("killedUserName", "")
+        killerPlayfabId = event_data.get("killerPlayfabId", "")
+        killedPlayfabId = event_data.get("killedPlayfabId", "BOT")
+        if not killerPlayfabId:
+            return
+        if not client.current_rex:
+            asyncio.create_task(
+                client.exec_command(
+                    f"say {killer} has defeated {killed} and claimed the vacant REX title"
+                )
+            )
+            asyncio.create_task(
+                client.exec_command(f"renameplayer {killerPlayfabId} [REX] {killer.replace('[REX]', '').lstrip()}")
+            )
+            client.current_rex = killerPlayfabId
+        elif client.current_rex == killedPlayfabId:
+            asyncio.create_task(
+                client.exec_command(
+                    f"say {killer} has defeated {killed} and claimed his REX title"
+                )
+            )
+            asyncio.create_task(
+                client.exec_command(f"renameplayer {killerPlayfabId} [REX] {killer}")
+            )
+            new_killed_name = killed.replace("[REX]", "").lstrip()
+            asyncio.create_task(
+                client.exec_command(f"renameplayer {killedPlayfabId} {new_killed_name}")
+            )
+            client.current_rex = killerPlayfabId
+    except Exception as e:
+        print(f"Failed to process REX tag compute, {str(e)}")
+
+
+def killfeed_process(event: str):
+    (success, event_data) = parse_utilities.parse_event(
+        event, parse_utilities.GROK_KILLFEED_EVENT
+    )
+    print(f"processing killfeed event ${event}")
+    if not success:
+        print(f"unrecognizable killfeed event {event}")
+        return
+    try:
+        rex_process(event_data)
+        kill_watcher.handle_event(event_data)
+    except Exception as e:
+        print(f"Failed to process killfeed event {str(e)}")
+
+
+login_listener.pipe(operators.filter(lambda x: x.startswith("Login:"))).subscribe(
+    login_process
+)
+killfeed_listener.pipe(operators.filter(lambda x: x.startswith("Killfeed:"))).subscribe(
+    killfeed_process
+)
+kill_watcher.subscribe(
+    on_next=lambda x: asyncio.create_task(client.exec_command(f"say {x}"))
+)
+
+
+async def main():
+    await asyncio.gather(
+        killfeed_listener.run(),
+        login_listener.run(),
+        client.start(environ["D_TOKEN"]),
+    )
+
+
+loop.run_until_complete(main())
