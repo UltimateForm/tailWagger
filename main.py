@@ -36,6 +36,7 @@ class Wagger(discord.Client):
     _server_status_channel_id: int = None
     _unpunish_channel_id: int = None
     _server_noti_channel_id: int = None
+    _tech_noti_channel_id: int = None
     _channel: discord.TextChannel = None
     _warn_channel: discord.TextChannel = None
     _console_channel: discord.TextChannel = None
@@ -43,6 +44,7 @@ class Wagger(discord.Client):
     _unpunish_channel: discord.TextChannel = None
     _unpunish_channel: discord.TextChannel = None
     _server_noti_channel: discord.TextChannel = None
+    _server_tech_noti_channel: discord.TextChannel = None
     _rcon_ready: bool = False
     _rcon_cmd_blacklist: List[str] = []
     _server_status_job = None
@@ -62,6 +64,7 @@ class Wagger(discord.Client):
         server_status_channel_id,
         unpunish_channel_id,
         server_noti_channel_id,
+        tech_noti_channel_id,
         intents: Intents,
         rcon_pass: str | None = None,
         rcon_addr: str | None = None,
@@ -75,6 +78,7 @@ class Wagger(discord.Client):
         self._server_status_channel_id = server_status_channel_id
         self._unpunish_channel_id = unpunish_channel_id
         self._server_noti_channel_id = server_noti_channel_id
+        self._tech_noti_channel_id = tech_noti_channel_id
         if rcon_pass and rcon_addr and rcon_port:
             self._rcon_addr = rcon_addr
             self._rcon_password = rcon_pass
@@ -104,6 +108,9 @@ class Wagger(discord.Client):
         self._unpunish_channel = await self.fetch_channel(self._unpunish_channel_id)
         self._server_noti_channel = await self.fetch_channel(
             self._server_noti_channel_id
+        )
+        self._server_tech_noti_channel = await self.fetch_channel(
+            self._tech_noti_channel_id
         )
         print(f"Logged on as {self.user}")
         self.ready = True
@@ -145,7 +152,6 @@ class Wagger(discord.Client):
         self.player_config["watch"].pop(id, None)
         self.save_config()
         return json.dumps(self.player_config, indent=2)
-
 
     async def process_joiners(self, joiners: dict[str, str]):
         ids = joiners.keys()
@@ -315,8 +321,8 @@ class Wagger(discord.Client):
         new_embed.set_image(url=culprit_info["avatarUrl"])
         await self._unpunish_channel.send(embed=new_embed)
 
-    async def send_logout(self, embed: Embed):
-        await self._channel.send(embed=embed)
+    async def send_ip_event(self, embed: Embed):
+        await self._tech_noti_channel_id.send(embed=embed)
 
     async def on_message(self, message: discord.message.Message):
         if message.content == "ping":
@@ -360,6 +366,7 @@ warn_channel_id = environ["D_PUN_CHANNEL_ID"]
 console_channel_id = environ["D_CONSOLE_CHANNEL_ID"]
 server_status_channel_id = environ["D_SERVER_STATUS_ID"]
 unpunish_channel_id = environ["D_UNPUNISH_CHANNEL_ID"]
+tech_noti_id = environ["D_TECH_NOTI_D"]
 server_noti_id = environ["D_SERVER_NOTI_ID"]
 rcon_addr = environ["RCON_ADDRESS"]
 rcon_pass = environ["RCON_PASSWORD"]
@@ -374,6 +381,7 @@ client = Wagger(
     server_status_channel_id,
     unpunish_channel_id,
     server_noti_id,
+    tech_noti_id,
     intents=intents,
     rcon_addr=rcon_addr,
     rcon_port=rcon_port,
@@ -412,26 +420,8 @@ def login_process(event: str):
         print(f"Failed to process login event {str(e)}")
 
 
-def killfeed_process(event: str):
-    (success, event_data) = parse_utilities.parse_event(
-        event, parse_utilities.GROK_KILLFEED_EVENT
-    )
-    print(f"processing killfeed event ${event}")
-    if not success:
-        print(f"unrecognizable killfeed event {event}")
-        return
-    try:
-        rex_process(event_data)
-        # kill_watcher.handle_event(event_data)
-    except Exception as e:
-        print(f"Failed to process killfeed event {str(e)}")
-
-
 login_listener.pipe(operators.filter(lambda x: x.startswith("Login:"))).subscribe(
     login_process
-)
-killfeed_listener.pipe(operators.filter(lambda x: x.startswith("Killfeed:"))).subscribe(
-    killfeed_process
 )
 kill_watcher.subscribe(
     on_next=lambda x: asyncio.create_task(client.exec_command(f"say {x}"))
@@ -444,13 +434,14 @@ def logout_log_process(log: str):
     )
     if not success:
         return
-    embed = Embed(title="Logout Event")
+    embed = Embed(title="Ip Event")
     playfabId = parsed.get("playfabId", None)
     userName = PLAYER_MAP.get(playfabId, "")
     embed.add_field(name="PlayfabId", value=parsed.get("playfabId", None), inline=False)
     embed.add_field(name="Username", value=userName, inline=False)
     embed.add_field(name="IP", value=parsed.get("ipAddress"), inline=False)
-    asyncio.create_task(client.send_logout(embed))
+    embed.add_field(name="RAW", value=log, inline=False)
+    asyncio.create_task(client.send_ip_event(embed))
 
 
 logs_watch.pipe(operators.filter(lambda x: "UNetConnection::Close" in x)).subscribe(
