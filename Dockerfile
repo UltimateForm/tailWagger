@@ -18,4 +18,6 @@ COPY ./rcon_listener.py .
 
 COPY ./kill_watch.py .
 
+COPY ./logs_watch.py .
+
 CMD ["pipenv", "run", "python", "main.py"]
