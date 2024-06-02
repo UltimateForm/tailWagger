@@ -38,7 +38,6 @@ class Wagger(discord.Client):
     _server_noti_channel_id: int = None
     _channel: discord.TextChannel = None
     _warn_channel: discord.TextChannel = None
-    _ban_channel: discord.TextChannel = None
     _console_channel: discord.TextChannel = None
     _server_status_channel: discord.TextChannel = None
     _unpunish_channel: discord.TextChannel = None
@@ -59,7 +58,6 @@ class Wagger(discord.Client):
         self,
         channel_id,
         warn_channel_id,
-        ban_channel_id,
         console_channel_id,
         server_status_channel_id,
         unpunish_channel_id,
@@ -73,7 +71,6 @@ class Wagger(discord.Client):
     ) -> None:
         self._channel_id = channel_id
         self._warn_channel_id = warn_channel_id
-        self._ban_channel_id = ban_channel_id
         self._console_channel_id = console_channel_id
         self._server_status_channel_id = server_status_channel_id
         self._unpunish_channel_id = unpunish_channel_id
@@ -100,7 +97,6 @@ class Wagger(discord.Client):
     async def on_ready(self):
         self._channel = await self.fetch_channel(self._channel_id)
         self._warn_channel = await self.fetch_channel(self._warn_channel_id)
-        self._ban_channel = await self.fetch_channel(self._ban_channel_id)
         self._console_channel = await self.fetch_channel(self._console_channel_id)
         self._server_status_channel = await self.fetch_channel(
             self._server_status_channel_id
@@ -129,44 +125,6 @@ class Wagger(discord.Client):
             return
         self.player_config = np.load(PLAYER_CONFIG_PATH, allow_pickle=True).item()
 
-    def tag_player(self, cmd: str):
-        args = cmd.split(" ")
-        if len(args) != 3:
-            return "Invalid arguments"
-        id = args[1]
-        tag = args[2]
-        self.player_config["tags"][id] = tag
-        self.save_config()
-        return json.dumps(self.player_config, indent=2)
-
-    def untag_player(self, cmd: str):
-        args = cmd.split(" ")
-        if len(args) != 2:
-            return "Invalid arguments"
-        id = args[1]
-        self.player_config["tags"].pop(id, None)
-        self.save_config()
-        return json.dumps(self.player_config, indent=2)
-
-    def add_salute(self, cmd: str):
-        args = cmd.split(" ", 2)
-        if len(args) < 3:
-            return "Invalid arguments"
-        id = args[1]
-        salute = args[2]
-        self.player_config["salutes"][id] = salute
-        self.save_config()
-        return json.dumps(self.player_config, indent=2)
-
-    def remove_salute(self, cmd: str):
-        args = cmd.split(" ")
-        if len(args) != 2:
-            return "Invalid arguments"
-        id = args[1]
-        self.player_config["salutes"].pop(id, None)
-        self.save_config()
-        return json.dumps(self.player_config, indent=2)
-
     def add_watch(self, cmd: str):
         args = cmd.split(" ", 2)
         if len(args) < 3:
@@ -188,16 +146,15 @@ class Wagger(discord.Client):
         self.save_config()
         return json.dumps(self.player_config, indent=2)
 
+
+    async def process_joiners(self, joiners: dict[str, str]):
+        ids = joiners.keys()
+        if len(ids) == 0:
+            return
+        await self.notify_watch(joiners)
+
     async def exec_command(self, cmd: str) -> str:
         try:
-            if cmd.startswith("tag "):
-                return self.tag_player(cmd)
-            if cmd.startswith("untag "):
-                return self.untag_player(cmd)
-            if cmd.startswith("addSalute "):
-                return self.add_salute(cmd)
-            if cmd.startswith("removeSalute "):
-                return self.remove_salute(cmd)
             if cmd.startswith("watch "):
                 return self.add_watch(cmd)
             if cmd.startswith("unwatch "):
@@ -224,30 +181,6 @@ class Wagger(discord.Client):
             print(f"Unknown error occured {str(e)}")
             return "Uknown error"
 
-    async def send_salutes(self, ids: set[str]):
-        config = self.player_config["salutes"]
-        target_ids = set(id for id in ids if id in config.keys())
-        if len(target_ids) == 0:
-            return
-        await asyncio.sleep(3)
-        [
-            asyncio.create_task(self.exec_command(f"say {config[id]}"))
-            for id in target_ids
-        ]
-
-    async def process_tags(self, targets: dict[str, str]):
-        ids = targets.keys()
-        config = self.player_config["tags"]
-        target_ids = set(id for id in ids if id in config.keys())
-        if len(target_ids) == 0:
-            return
-        [
-            asyncio.create_task(
-                self.exec_command(f"renameplayer {id} [{config[id]}] {targets[id]}")
-            )
-            for id in target_ids
-        ]
-
     async def notify_watch(self, targets: dict[str, str]):
         ids = targets.keys()
         config = self.player_config["watch"]
@@ -262,14 +195,6 @@ class Wagger(discord.Client):
             )
             for id in target_ids
         ]
-
-    async def process_joiners(self, joiners: dict[str, str]):
-        ids = joiners.keys()
-        if len(ids) == 0:
-            return
-        await self.send_salutes(ids)
-        await self.process_tags(joiners)
-        await self.notify_watch(joiners)
 
     async def server_status_watch(self, interval_secs: int = 30):
         while True:
@@ -367,9 +292,7 @@ class Wagger(discord.Client):
         embed.add_field(name="Reason", value=punishment.reason)
         embed.add_field(name="Duration", value=punishment.duration)
         embed.set_image(url=json_response["avatarUrl"])
-        if punishment.type == ".ban":
-            await self._ban_channel.send(embed=embed)
-        else:
+        if punishment.type == ".warn":
             await self._warn_channel.send(embed=embed)
         return embed
 
@@ -432,10 +355,8 @@ class Wagger(discord.Client):
 # this is untenable, create some sort of configuration collector
 intents = discord.Intents.default()
 intents.message_content = True
-intents
 target_channel_id = environ["D_CHANNEL_ID"]
 warn_channel_id = environ["D_PUN_CHANNEL_ID"]
-ban_channel_id = environ["D_BAN_CHANNEL_ID"]
 console_channel_id = environ["D_CONSOLE_CHANNEL_ID"]
 server_status_channel_id = environ["D_SERVER_STATUS_ID"]
 unpunish_channel_id = environ["D_UNPUNISH_CHANNEL_ID"]
@@ -449,7 +370,6 @@ rcon_port = int(rcon_port_unparsed)
 client = Wagger(
     target_channel_id,
     warn_channel_id,
-    ban_channel_id,
     console_channel_id,
     server_status_channel_id,
     unpunish_channel_id,
@@ -492,44 +412,6 @@ def login_process(event: str):
         print(f"Failed to process login event {str(e)}")
 
 
-def rex_process(event_data: dict[str, str]):
-    try:
-        killer = event_data.get("userName", "")
-        killed = event_data.get("killedUserName", "")
-        killerPlayfabId = event_data.get("killerPlayfabId", "")
-        killedPlayfabId = event_data.get("killedPlayfabId", "BOT")
-        if not killerPlayfabId:
-            return
-        if not client.current_rex:
-            asyncio.create_task(
-                client.exec_command(
-                    f"say {killer} has defeated {killed} and claimed the vacant REX title"
-                )
-            )
-            asyncio.create_task(
-                client.exec_command(
-                    f"renameplayer {killerPlayfabId} [REX] {killer.replace('[REX]', '').lstrip()}"
-                )
-            )
-            client.current_rex = killerPlayfabId
-        elif client.current_rex == killedPlayfabId:
-            asyncio.create_task(
-                client.exec_command(
-                    f"say {killer} has defeated {killed} and claimed his REX title"
-                )
-            )
-            asyncio.create_task(
-                client.exec_command(f"renameplayer {killerPlayfabId} [REX] {killer}")
-            )
-            new_killed_name = killed.replace("[REX]", "").lstrip()
-            asyncio.create_task(
-                client.exec_command(f"renameplayer {killedPlayfabId} {new_killed_name}")
-            )
-            client.current_rex = killerPlayfabId
-    except Exception as e:
-        print(f"Failed to process REX tag compute, {str(e)}")
-
-
 def killfeed_process(event: str):
     (success, event_data) = parse_utilities.parse_event(
         event, parse_utilities.GROK_KILLFEED_EVENT
@@ -540,7 +422,7 @@ def killfeed_process(event: str):
         return
     try:
         rex_process(event_data)
-        kill_watcher.handle_event(event_data)
+        # kill_watcher.handle_event(event_data)
     except Exception as e:
         print(f"Failed to process killfeed event {str(e)}")
 
