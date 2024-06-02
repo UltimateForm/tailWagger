@@ -44,7 +44,7 @@ class Wagger(discord.Client):
     _unpunish_channel: discord.TextChannel = None
     _unpunish_channel: discord.TextChannel = None
     _server_noti_channel: discord.TextChannel = None
-    _server_tech_noti_channel: discord.TextChannel = None
+    _tech_noti_channel: discord.TextChannel = None
     _rcon_ready: bool = False
     _rcon_cmd_blacklist: List[str] = []
     _server_status_job = None
@@ -109,7 +109,7 @@ class Wagger(discord.Client):
         self._server_noti_channel = await self.fetch_channel(
             self._server_noti_channel_id
         )
-        self._server_tech_noti_channel = await self.fetch_channel(
+        self._tech_noti_channel = await self.fetch_channel(
             self._tech_noti_channel_id
         )
         print(f"Logged on as {self.user}")
@@ -322,7 +322,7 @@ class Wagger(discord.Client):
         await self._unpunish_channel.send(embed=new_embed)
 
     async def send_ip_event(self, embed: Embed):
-        await self._tech_noti_channel_id.send(embed=embed)
+        await self._tech_noti_channel.send(embed=embed)
 
     async def on_message(self, message: discord.message.Message):
         if message.content == "ping":
